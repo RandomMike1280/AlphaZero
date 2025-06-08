@@ -3,13 +3,12 @@ from .node import Node
 import torch
 import copy
 import concurrent.futures
-# import math # No longer needed
 
 class MCTS:
     """
     Monte Carlo Tree Search implementation for AlphaZero.
     This version is optimized with BATCHED inference and supports
-    MULTI-GPU parallel evaluation.
+    MULTI-GPU parallel evaluation with robust error handling.
     """
 
     def __init__(self, model, game, args):
@@ -19,7 +18,6 @@ class MCTS:
         self.num_virtual_losses = 1
         self.batch_size = self.args.get('mcts_batch_size', 8)
         
-        # --- NEW: Multi-GPU Initialization (Corrected) ---
         self.device = self.args.get('device', 'cpu')
         self.thread_pool = None
         self.model_replicas = []
@@ -28,43 +26,28 @@ class MCTS:
             self.num_gpus = torch.cuda.device_count()
             if self.num_gpus > 1:
                 print(f"[MCTS] Found {self.num_gpus} GPUs. Initializing model replicas for parallel inference.")
-                # Create a deep copy of the model for each GPU
-                # **MODIFICATION**: We assume `self.model` is the nn.Module itself.
-                # Move the original model to CPU to free up GPU 0 memory during replication.
                 self.model.to('cpu') 
                 for i in range(self.num_gpus):
-                    # Deepcopy creates a new model with the same weights but on the CPU.
                     replica = copy.deepcopy(self.model)
-                    # Move the replica to its dedicated GPU.
                     replica.to(f'cuda:{i}')
                     self.model_replicas.append(replica)
-                
-                # Move the original model back to the primary device (e.g., 'cuda:0')
-                # for single-threaded operations like root evaluation.
                 self.model.to('cuda:0')
-                
-                # Create a thread pool to manage parallel predictions
                 self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_gpus)
         else:
             self.num_gpus = 0
-        # --- END NEW ---
 
     def __del__(self):
-        """Ensure the thread pool is shut down when the MCTS object is destroyed."""
         if self.thread_pool:
             self.thread_pool.shutdown()
 
     def _predict_worker(self, model_replica, state_chunk):
-        """
-        A helper function that runs model prediction in a separate thread.
-        Each thread gets its own model replica located on a specific GPU.
-        """
         return model_replica.predict(state_chunk)
 
     def _parallel_predict(self, encoded_states):
         """
-        Splits a batch of states, sends them to different GPUs in parallel,
-        and reassembles the results.
+        Splits a batch, sends to GPUs, and returns results.
+        **MODIFICATION**: This function now returns a list of results (or None)
+        for each chunk, preserving the structure for error handling.
         """
         state_chunks = np.array_split(encoded_states, self.num_gpus)
         
@@ -74,28 +57,18 @@ class MCTS:
                 future = self.thread_pool.submit(self._predict_worker, self.model_replicas[i], chunk)
                 future_to_chunk_index[future] = i
 
-        results = [None] * len(state_chunks)
+        results_by_chunk = [None] * len(state_chunks)
         for future in concurrent.futures.as_completed(future_to_chunk_index):
             chunk_index = future_to_chunk_index[future]
             try:
-                results[chunk_index] = future.result()
+                results_by_chunk[chunk_index] = future.result()
             except Exception as exc:
-                print(f'Chunk {chunk_index} generated an exception: {exc}')
+                print(f'[MCTS Warning] Prediction on chunk {chunk_index} failed: {exc}')
+                # The entry in results_by_chunk remains None
         
-        successful_results = [res for res in results if res is not None]
-        if not successful_results:
-            raise RuntimeError("All parallel prediction workers failed.")
-
-        all_logits = np.concatenate([res[0] for res in successful_results], axis=0)
-        all_values = np.concatenate([res[1] for res in successful_results], axis=0)
-        all_policies = np.concatenate([res[2] for res in successful_results], axis=0)
-
-        return all_logits, all_values, all_policies
+        return results_by_chunk
 
     def search(self, state, add_exploration_noise=False):
-        """
-        Perform MCTS from the given state using batched and potentially parallel evaluations.
-        """
         root = Node(self.game, state)
 
         encoded_state = self.game.get_encoded_state(state)
@@ -108,8 +81,6 @@ class MCTS:
         root.expand(policy)
         root.update(0)
 
-        # **MODIFICATION**: Reverted to integer division to maintain the exact same number of
-        # simulations as the original code, ensuring deterministic behavior for testing.
         for _ in range(self.args.get('num_simulations', 800) // self.batch_size):
             leaf_nodes_to_evaluate = []
             
@@ -132,21 +103,53 @@ class MCTS:
             if leaf_nodes_to_evaluate:
                 encoded_states = np.array([self.game.get_encoded_state(n.state) for n in leaf_nodes_to_evaluate])
                 
-                # Use parallel prediction if conditions are met
                 use_parallel = self.thread_pool and len(leaf_nodes_to_evaluate) > self.num_gpus
                 
                 if use_parallel:
-                    _, values, policies = self._parallel_predict(encoded_states)
-                else:
-                    # Fallback to single-device prediction
-                    _, values, policies = self.model.predict(encoded_states)
+                    # --- NEW ROBUST BACKUP LOGIC ---
+                    # 1. Get results per chunk, which may include Nones for failed chunks
+                    prediction_results_by_chunk = self._parallel_predict(encoded_states)
 
-                for i, node in enumerate(leaf_nodes_to_evaluate):
-                    policy = policies[i]
-                    value = values[i][0]
-                    node.expand(policy)
-                    node.backup(value)
-                    self._remove_virtual_loss(node, self.num_virtual_losses)
+                    # 2. Manually chunk the nodes to align with the prediction chunks
+                    # We can't use np.array_split on a list of objects, so we calculate indices.
+                    # This logic mimics np.array_split's behavior.
+                    total_nodes = len(leaf_nodes_to_evaluate)
+                    num_chunks = self.num_gpus
+                    base, extra = divmod(total_nodes, num_chunks)
+                    chunk_lengths = [base + 1] * extra + [base] * (num_chunks - extra)
+                    
+                    current_pos = 0
+                    node_chunks = []
+                    for length in chunk_lengths:
+                        node_chunks.append(leaf_nodes_to_evaluate[current_pos : current_pos + length])
+                        current_pos += length
+
+                    # 3. Process each chunk
+                    for i, chunk_result in enumerate(prediction_results_by_chunk):
+                        nodes_in_this_chunk = node_chunks[i]
+                        if chunk_result is not None:
+                            # This chunk was successful
+                            _, values, policies = chunk_result
+                            for j, node in enumerate(nodes_in_this_chunk):
+                                policy = policies[j]
+                                value = values[j][0]
+                                node.expand(policy)
+                                node.backup(value)
+                                self._remove_virtual_loss(node, self.num_virtual_losses)
+                        else:
+                            # This chunk failed. Just remove the virtual loss for these nodes.
+                            for node in nodes_in_this_chunk:
+                                self._remove_virtual_loss(node, self.num_virtual_losses)
+                    # --- END NEW ROBUST BACKUP LOGIC ---
+                else:
+                    # Fallback to single-device prediction (original logic)
+                    _, values, policies = self.model.predict(encoded_states)
+                    for i, node in enumerate(leaf_nodes_to_evaluate):
+                        policy = policies[i]
+                        value = values[i][0]
+                        node.expand(policy)
+                        node.backup(value)
+                        self._remove_virtual_loss(node, self.num_virtual_losses)
 
         return root
 
@@ -170,10 +173,10 @@ class MCTS:
         noise = np.random.dirichlet([alpha] * len(valid_indices))
         policy[valid_indices] = (1 - epsilon) * policy[valid_indices] + epsilon * noise
 
+# The get_action_distribution function remains the same.
 def get_action_distribution(game, state, model, args, temperature=1.0, add_exploration_noise=False):
     mcts = MCTS(model, game, args)
     root = mcts.search(state, add_exploration_noise)
     action_probs = root.get_improved_policy(temperature)
-    # Explicitly delete the MCTS object to ensure __del__ is called and the thread pool is shut down.
     del mcts
     return action_probs, root
