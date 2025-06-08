@@ -81,7 +81,7 @@ class AlphaZero:
             # 1. Self-play to generate training data
             print("Generating self-play data...")
             iteration_examples = self.self_play.generate_data(
-                num_episodes=self.args['num_self_play_games']
+                num_episodes=self.args['num_selfplay_iterations']
             )
             
             # Add examples to the training set

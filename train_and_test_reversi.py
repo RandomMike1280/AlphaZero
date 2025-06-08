@@ -133,7 +133,7 @@ if __name__ == '__main__':
     # Training arguments
     args = {
         'num_iterations': 3,  # Number of training iterations
-        'num_self_play_games': 10,  # Number of self-play games per iteration
+        'num_selfplay_iterations': 10,  # Number of self-play games per iteration
         'num_epochs': 4,  # Number of training epochs per iteration
         'batch_size': 64,  # Batch size for training
         'learning_rate': 0.001,  # Learning rate
