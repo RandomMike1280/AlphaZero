@@ -121,7 +121,12 @@ def test_model(model, num_games=10):
                 encoded_state = torch.tensor(encoded_state, device=device).unsqueeze(0)
                 
                 # Get action probabilities from MCTS
-                action_probs, _ = get_action_distribution(model, encoded_state, game, 1.0, 100)
+                args = {
+                    'num_mcts_simulations': 100,
+                    'mcts_batch_size': 8,
+                    'device': str(device)
+                }
+                action_probs, _ = get_action_distribution(game, state, model, args, temperature=1.0)
                 
                 # Choose action with highest probability
                 action = np.argmax(action_probs)
