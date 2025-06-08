@@ -134,6 +134,7 @@ if __name__ == '__main__':
     args = {
         'num_iterations': 3,  # Number of training iterations
         'num_selfplay_iterations': 10,  # Number of self-play games per iteration
+        'mcts_batch_size':32,
         'num_epochs': 4,  # Number of training epochs per iteration
         'batch_size': 64,  # Batch size for training
         'learning_rate': 0.001,  # Learning rate

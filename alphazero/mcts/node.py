@@ -96,12 +96,16 @@ class Node:
         
         # Normalize policy to sum to 1
         policy_sum = np.sum(valid_policy)
-        if policy_sum > 0:
-            valid_policy /= policy_sum
+        if policy_sum > 1e-10:  # Small epsilon to avoid floating point errors
+            valid_policy = valid_policy / policy_sum
         else:
             # Fallback: use uniform policy if all valid moves have 0 probability
-            uniform_policy = valid_moves / np.sum(valid_moves)
-            valid_policy = uniform_policy
+            valid_moves_sum = np.sum(valid_moves)
+            if valid_moves_sum > 0:
+                valid_policy = valid_moves / valid_moves_sum
+            else:
+                # If no valid moves, return zeros (this should be handled by the game logic)
+                valid_policy = np.zeros_like(valid_moves)
         
         new_children = []
         for action in range(len(valid_moves)):
@@ -194,6 +198,9 @@ class Node:
         # Handle case where no visits have occurred
         if total == 0:
             valid_moves = self.game.get_valid_moves(self.state)
-            return valid_moves / np.sum(valid_moves)
+            valid_moves_sum = np.sum(valid_moves)
+            if valid_moves_sum > 0:
+                return valid_moves / valid_moves_sum
+            return valid_moves  # Return zeros if no valid moves
             
         return counts / total
