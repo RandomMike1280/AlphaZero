@@ -3,7 +3,7 @@ from .node import Node
 import torch
 import copy
 import concurrent.futures
-import math
+# import math # No longer needed
 
 class MCTS:
     """
@@ -19,7 +19,7 @@ class MCTS:
         self.num_virtual_losses = 1
         self.batch_size = self.args.get('mcts_batch_size', 8)
         
-        # --- NEW: Multi-GPU Initialization ---
+        # --- NEW: Multi-GPU Initialization (Corrected) ---
         self.device = self.args.get('device', 'cpu')
         self.thread_pool = None
         self.model_replicas = []
@@ -27,18 +27,21 @@ class MCTS:
         if self.device == 'cuda' and torch.cuda.is_available():
             self.num_gpus = torch.cuda.device_count()
             if self.num_gpus > 1:
-                # print(f"[MCTS] Found {self.num_gpus} GPUs. Initializing model replicas for parallel inference.")
+                print(f"[MCTS] Found {self.num_gpus} GPUs. Initializing model replicas for parallel inference.")
                 # Create a deep copy of the model for each GPU
-                # This assumes the model's nn.Module is at self.model.model
-                # and the main model is on the CPU or the primary device.
-                self.model.model.to('cpu') # Move original to CPU to avoid OOM on device 0
+                # **MODIFICATION**: We assume `self.model` is the nn.Module itself.
+                # Move the original model to CPU to free up GPU 0 memory during replication.
+                self.model.to('cpu') 
                 for i in range(self.num_gpus):
+                    # Deepcopy creates a new model with the same weights but on the CPU.
                     replica = copy.deepcopy(self.model)
-                    replica.model.to(f'cuda:{i}')
+                    # Move the replica to its dedicated GPU.
+                    replica.to(f'cuda:{i}')
                     self.model_replicas.append(replica)
                 
-                # Move original model back to the primary device if needed for other tasks
-                self.model.model.to('cuda:0')
+                # Move the original model back to the primary device (e.g., 'cuda:0')
+                # for single-threaded operations like root evaluation.
+                self.model.to('cuda:0')
                 
                 # Create a thread pool to manage parallel predictions
                 self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_gpus)
@@ -63,36 +66,26 @@ class MCTS:
         Splits a batch of states, sends them to different GPUs in parallel,
         and reassembles the results.
         """
-        # Split the batch of states into chunks for each GPU
-        # np.array_split is useful as it handles cases where the batch
-        # size is not perfectly divisible by the number of GPUs.
         state_chunks = np.array_split(encoded_states, self.num_gpus)
         
-        # Submit prediction jobs to the thread pool
         future_to_chunk_index = {}
         for i, chunk in enumerate(state_chunks):
             if len(chunk) > 0:
                 future = self.thread_pool.submit(self._predict_worker, self.model_replicas[i], chunk)
                 future_to_chunk_index[future] = i
 
-        # Collect results as they complete
         results = [None] * len(state_chunks)
         for future in concurrent.futures.as_completed(future_to_chunk_index):
             chunk_index = future_to_chunk_index[future]
             try:
-                # The result from predict is a tuple: (logits, values, policies)
                 results[chunk_index] = future.result()
             except Exception as exc:
                 print(f'Chunk {chunk_index} generated an exception: {exc}')
-                # Handle exception appropriately, maybe by returning an empty result
-                # or re-raising the exception. For now, we'll store None.
         
-        # Filter out any failed chunks and reassemble the results in the correct order
         successful_results = [res for res in results if res is not None]
         if not successful_results:
             raise RuntimeError("All parallel prediction workers failed.")
 
-        # Unpack and concatenate the results
         all_logits = np.concatenate([res[0] for res in successful_results], axis=0)
         all_values = np.concatenate([res[1] for res in successful_results], axis=0)
         all_policies = np.concatenate([res[2] for res in successful_results], axis=0)
@@ -105,7 +98,6 @@ class MCTS:
         """
         root = Node(self.game, state)
 
-        # First evaluation for the root node is always done on the main model
         encoded_state = self.game.get_encoded_state(state)
         _, _, policy_probs = self.model.predict(encoded_state)
         policy = policy_probs[0]
@@ -116,8 +108,9 @@ class MCTS:
         root.expand(policy)
         root.update(0)
 
-        num_loops = self.args.get('num_simulations', 800) // self.batch_size
-        for _ in range(num_loops):
+        # **MODIFICATION**: Reverted to integer division to maintain the exact same number of
+        # simulations as the original code, ensuring deterministic behavior for testing.
+        for _ in range(self.args.get('num_simulations', 800) // self.batch_size):
             leaf_nodes_to_evaluate = []
             
             for _ in range(self.batch_size):
@@ -139,7 +132,7 @@ class MCTS:
             if leaf_nodes_to_evaluate:
                 encoded_states = np.array([self.game.get_encoded_state(n.state) for n in leaf_nodes_to_evaluate])
                 
-                # --- MODIFIED: Use parallel prediction if conditions are met ---
+                # Use parallel prediction if conditions are met
                 use_parallel = self.thread_pool and len(leaf_nodes_to_evaluate) > self.num_gpus
                 
                 if use_parallel:
@@ -147,7 +140,6 @@ class MCTS:
                 else:
                     # Fallback to single-device prediction
                     _, values, policies = self.model.predict(encoded_states)
-                # --- END MODIFIED ---
 
                 for i, node in enumerate(leaf_nodes_to_evaluate):
                     policy = policies[i]
@@ -178,12 +170,10 @@ class MCTS:
         noise = np.random.dirichlet([alpha] * len(valid_indices))
         policy[valid_indices] = (1 - epsilon) * policy[valid_indices] + epsilon * noise
 
-
-# The get_action_distribution function remains the same.
 def get_action_distribution(game, state, model, args, temperature=1.0, add_exploration_noise=False):
     mcts = MCTS(model, game, args)
     root = mcts.search(state, add_exploration_noise)
     action_probs = root.get_improved_policy(temperature)
-    # Don't forget to clean up the MCTS object to shut down the thread pool
+    # Explicitly delete the MCTS object to ensure __del__ is called and the thread pool is shut down.
     del mcts
     return action_probs, root
