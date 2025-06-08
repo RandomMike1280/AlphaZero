@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import argparse
 
 from alphazero.games.reversi import Reversi
 from alphazero.neural_network.model import ResNet
@@ -11,12 +12,43 @@ from alphazero.mcts.search import get_action_distribution
 from alphazero.utils import set_random_seed
 
 
-def train_model(args):
+def load_checkpoint(checkpoint_path, model, optimizer=None):
+    """
+    Load model checkpoint.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file.
+        model: Model to load the weights into.
+        optimizer: Optional optimizer to load state.
+        
+    Returns:
+        Tuple of (model, optimizer, start_iteration, best_score)
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+    
+    print(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=model.device)
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    start_iteration = checkpoint.get('iteration', 0) + 1
+    best_score = checkpoint.get('best_score', float('-inf'))
+    
+    print(f"Loaded checkpoint from iteration {start_iteration-1}")
+    return model, optimizer, start_iteration, best_score
+
+
+def train_model(args, checkpoint_path=None):
     """
     Train an AlphaZero model for Reversi.
     
     Args:
         args: Dictionary of training arguments.
+        checkpoint_path: Optional path to checkpoint file to resume training.
     
     Returns:
         Trained model.
@@ -34,6 +66,17 @@ def train_model(args):
         device=args['device']
     )
     
+    start_iteration = 0
+    
+    # Load checkpoint if provided
+    if checkpoint_path:
+        try:
+            model, _, start_iteration, _ = load_checkpoint(checkpoint_path, model)
+            print(f"Resuming training from iteration {start_iteration}")
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            print("Starting training from scratch")
+    
     # Create trainer
     alpha_zero = AlphaZero(
         game=game,
@@ -43,7 +86,7 @@ def train_model(args):
     
     # Train model
     start_time = time.time()
-    trained_model = alpha_zero.train()
+    trained_model = alpha_zero.train(start_iteration=start_iteration)
     training_time = time.time() - start_time
     
     print(f"Training completed in {training_time:.2f} seconds")
@@ -127,6 +170,14 @@ def test_model(model, num_games=10):
 
 
 if __name__ == '__main__':
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Train and test AlphaZero for Reversi')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                      help='Path to checkpoint file to resume training')
+    parser.add_argument('--test-only', action='store_true',
+                      help='Only test the model without training')
+    args_cmd = parser.parse_args()
+    
     # Set random seed for reproducibility
     set_random_seed(42)
     
@@ -156,8 +207,19 @@ if __name__ == '__main__':
     
     print(f"Using device: {args['device']}")
     
-    # Train the model
-    model = train_model(args)
+    # Train and test the model
+    if not args_cmd.test_only:
+        trained_model = train_model(args, checkpoint_path=args_cmd.checkpoint)
+    else:
+        if not args_cmd.checkpoint:
+            raise ValueError("Checkpoint path must be provided when using --test-only")
+        game = Reversi()
+        trained_model = ResNet(
+            game=game,
+            num_resblocks=args['num_resblocks'],
+            num_filters=args['num_filters'],
+            device=args['device']
+        )
+        trained_model, _, _, _ = load_checkpoint(args_cmd.checkpoint, trained_model)
     
-    # Test the model
-    test_model(model, num_games=10)
+    test_model(trained_model, num_games=10)
