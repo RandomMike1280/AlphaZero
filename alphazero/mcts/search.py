@@ -25,7 +25,7 @@ class MCTS:
         if self.device == 'cuda' and torch.cuda.is_available():
             self.num_gpus = torch.cuda.device_count()
             if self.num_gpus > 1:
-                print(f"[MCTS] Found {self.num_gpus} GPUs. Initializing model replicas for parallel inference.")
+                # print(f"[MCTS] Found {self.num_gpus} GPUs. Initializing model replicas for parallel inference.")
                 self.model.to('cpu') 
                 for i in range(self.num_gpus):
                     replica = copy.deepcopy(self.model)
