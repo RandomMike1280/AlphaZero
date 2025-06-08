@@ -199,8 +199,9 @@ class Node:
         if total == 0:
             valid_moves = self.game.get_valid_moves(self.state)
             valid_moves_sum = np.sum(valid_moves)
-            if valid_moves_sum > 0:
+            if valid_moves_sum > 1e-10:  # Small epsilon to avoid floating point errors
                 return valid_moves / valid_moves_sum
-            return valid_moves  # Return zeros if no valid moves
+            # If no valid moves, return uniform distribution (this should be handled by the game logic)
+            return np.ones_like(valid_moves) / len(valid_moves) if len(valid_moves) > 0 else valid_moves
             
         return counts / total
