@@ -29,8 +29,24 @@ class MCTS:
                 self.model.to('cpu') 
                 for i in range(self.num_gpus):
                     replica = copy.deepcopy(self.model)
-                    replica.to(f'cuda:{i}')
+                    device_id = f'cuda:{i}'
+                    
+                    # Move the replica's parameters to the target device
+                    replica.to(device_id)
+                    
+                    # --- THE FIX ---
+                    # Explicitly update the replica's internal device attribute so that its
+                    # .predict() method sends data to the correct GPU.
+                    # We use hasattr for safety in case the model doesn't have this attribute.
+                    if hasattr(replica, 'device'):
+                        replica.device = device_id
+                    else:
+                        print(f"[MCTS Warning] Model replica for {device_id} does not have a 'device' attribute to update.")
+                    # --- END FIX ---
+                    
                     self.model_replicas.append(replica)
+                
+                # Move original model back to the primary device
                 self.model.to('cuda:0')
                 self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.num_gpus)
         else:
