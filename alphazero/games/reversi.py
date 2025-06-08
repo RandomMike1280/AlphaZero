@@ -140,16 +140,16 @@ class Reversi(Game):
         - Channel 1: Opponent's pieces
         - Channel 2: Empty spaces (optional, but can be useful)
         """
-        return np.stack([
-            (state == 1).astype(np.float32),
-            (state == -1).astype(np.float32),
-        ])
-        # A 3-channel version could be:
         # return np.stack([
-        #     (state == 1).astype(np.float32), 
+        #     (state == 1).astype(np.float32),
         #     (state == -1).astype(np.float32),
-        #     (state == 0).astype(np.float32)
         # ])
+        # A 3-channel version could be:
+        return np.stack([
+            (state == 1).astype(np.float32), 
+            (state == -1).astype(np.float32),
+            (state == 0).astype(np.float32)
+        ])
 
     def get_symmetries(self, state_encoded: np.ndarray, policy: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
