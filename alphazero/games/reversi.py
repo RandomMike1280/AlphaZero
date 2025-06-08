@@ -138,7 +138,8 @@ class Reversi(Game):
         """
         return np.stack([
             (state == 1).astype(np.float32),
-            (state == -1).astype(np.float32)
+            (state == -1).astype(np.float32),
+            (state == 0).astype(np.float32)
         ])
 
     def get_symmetries(self, state_encoded: np.ndarray, policy: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
