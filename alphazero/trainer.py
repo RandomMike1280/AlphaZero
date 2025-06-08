@@ -64,18 +64,27 @@ class AlphaZero:
         self.selfplay_examples = []
         self.iteration_duration = []
         
-    def train(self):
+    def train(self, start_iteration=0):
         """
         Run the complete AlphaZero training process.
         
+        Args:
+            start_iteration: The iteration number to start training from (for resuming training).
+            
         Returns:
             The trained model.
         """
         print(f"Starting AlphaZero training on {self.args['device']}")
         print(f"Game: {self.game}")
         
-        for iteration in range(self.args['num_iterations']):
-            print(f"\nIteration {iteration+1}/{self.args['num_iterations']}")
+        # Adjust total iterations based on start_iteration
+        total_iterations = self.args['num_iterations']
+        if start_iteration > 0:
+            print(f"Resuming training from iteration {start_iteration}")
+            total_iterations += start_iteration
+        
+        for iteration in range(start_iteration, total_iterations):
+            print(f"\nIteration {iteration+1}/{total_iterations} (including {start_iteration} warm-up iterations)")
             start_time = time.time()
             
             # 1. Self-play to generate training data
