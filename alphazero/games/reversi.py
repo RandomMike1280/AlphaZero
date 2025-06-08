@@ -1,257 +1,173 @@
 import numpy as np
-from .game import Game
+from typing import List, Tuple, Optional
+
+# Assuming a base Game class exists, like:
+# class Game:
+#     def get_action_size(self): pass
+#     ...
+# We'll make our own simple one for this standalone example.
+class Game:
+    def __init__(self):
+        self.action_size = 0
 
 class Reversi(Game):
     """
-    Implementation of Reversi (Othello) game for AlphaZero.
-    
+    An optimized implementation of the Reversi (Othello) game environment.
+
     Board representation:
-    - 0: Empty
     - 1: Player 1 (Black)
     - -1: Player -1 (White)
+    - 0: Empty
     """
+    # Class constants for directions and board size for clarity and efficiency
+    DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
     
-    def __init__(self):
+    def __init__(self, board_size: int = 8):
         """Initialize Reversi game parameters."""
-        self.row_count = 8
-        self.column_count = 8
+        super().__init__()
+        assert board_size % 2 == 0, "Board size must be an even number."
+        self.row_count = board_size
+        self.column_count = board_size
         self.action_size = self.row_count * self.column_count
-        
-    def get_initial_state(self):
-        """
-        Returns the initial state of the Reversi board.
-        
-        Returns:
-            8x8 numpy array with starting pieces in the center.
-        """
-        state = np.zeros((self.row_count, self.column_count))
-        # Place the initial 4 pieces in the center
-        mid_row, mid_col = self.row_count // 2, self.column_count // 2
-        state[mid_row-1:mid_row+1, mid_col-1:mid_col+1] = np.array([[1, -1], [-1, 1]])
+
+    def get_initial_state(self) -> np.ndarray:
+        """Returns the initial state of the Reversi board."""
+        state = np.zeros((self.row_count, self.column_count), dtype=np.int8)
+        mid = self.row_count // 2
+        state[mid - 1, mid - 1] = 1
+        state[mid - 1, mid] = -1
+        state[mid, mid - 1] = -1
+        state[mid, mid] = 1
         return state
-    
-    def is_valid_move(self, state, action, player):
-        """Check if a move is valid."""
-        if action is None:
-            return False
-            
-        row = action // self.column_count
-        col = action % self.column_count
+
+    def _get_flips_for_move(self, state: np.ndarray, action: int, player: int) -> List[Tuple[int, int]]:
+        """
+        Calculates all opponent pieces that would be flipped by a given move.
+        This is a core helper function to avoid code duplication.
         
-        # Check if the cell is empty
+        Returns an empty list if the move is invalid.
+        """
+        row, col = action // self.column_count, action % self.column_count
+
+        # Move is invalid if the square is not empty
         if state[row, col] != 0:
-            return False
-            
-        # Check all 8 directions
-        directions = [(-1,-1), (-1,0), (-1,1),
-                     (0,-1),          (0,1),
-                     (1,-1),  (1,0),  (1,1)]
-        
-        for dr, dc in directions:
+            return []
+
+        pieces_to_flip = []
+        for dr, dc in self.DIRECTIONS:
             r, c = row + dr, col + dc
-            to_flip = []
-            
-            # Move in the direction until we find player's piece or hit the edge
+            line = []
             while 0 <= r < self.row_count and 0 <= c < self.column_count:
-                if state[r, c] == 0:  # Empty cell
+                if state[r, c] == -player: # Opponent's piece
+                    line.append((r, c))
+                elif state[r, c] == player: # Player's own piece
+                    pieces_to_flip.extend(line)
                     break
-                elif state[r, c] == -player:  # Opponent's piece
-                    to_flip.append((r, c))
-                else:  # Player's piece
-                    if to_flip:  # If we have pieces to flip
-                        return True
+                else: # Empty square
                     break
                 r += dr
                 c += dc
-        
-        return False
-    
-    def get_valid_moves(self, state):
+        return pieces_to_flip
+
+    def get_valid_moves(self, state: np.ndarray, player: int) -> np.ndarray:
         """
-        Returns a binary vector of valid moves for the current player.
-        
-        Args:
-            state: Current 8x8 board state.
-            
-        Returns:
-            Binary vector of length 64, where 1 means the move is valid.
+        Returns a binary vector of valid moves for the given player.
         """
         valid_moves = np.zeros(self.action_size, dtype=np.uint8)
-        
-        for action in range(self.action_size):
-            row = action // self.column_count
-            col = action % self.column_count
-            if state[row, col] == 0 and self.is_valid_move(state, action, 1):
+        # Find all empty squares
+        empty_squares = np.where(state == 0)
+        for r, c in zip(*empty_squares):
+            action = r * self.column_count + c
+            # A move is valid if it flips at least one piece
+            if self._get_flips_for_move(state, action, player):
                 valid_moves[action] = 1
-                
         return valid_moves
-    
-    def get_next_state(self, state, action, player):
+
+    def get_next_state(self, state: np.ndarray, action: int, player: int) -> np.ndarray:
         """
         Applies the action to the current state and returns the new state.
-        
-        Args:
-            state: Current 8x8 board state.
-            action: Integer in [0, 63] representing position on the board.
-            player: 1 or -1, representing the player.
-            
-        Returns:
-            New state after the action is applied.
+        Assumes the action is valid.
         """
-        if action is None:  # Pass
-            return state
-            
-        row = action // self.column_count
-        col = action % self.column_count
         next_state = state.copy()
+        row, col = action // self.column_count, action % self.column_count
+        
+        pieces_to_flip = self._get_flips_for_move(state, action, player)
+        
+        # Place the new piece and flip the opponent's pieces
         next_state[row, col] = player
-        
-        # Flip opponent's pieces
-        directions = [(-1,-1), (-1,0), (-1,1),
-                     (0,-1),          (0,1),
-                     (1,-1),  (1,0),  (1,1)]
-        
-        for dr, dc in directions:
-            r, c = row + dr, col + dc
-            to_flip = []
+        for r, c in pieces_to_flip:
+            next_state[r, c] = player
             
-            # Move in the direction until we find player's piece or hit the edge
-            while 0 <= r < self.row_count and 0 <= c < self.column_count:
-                if next_state[r, c] == 0:  # Empty cell
-                    break
-                elif next_state[r, c] == -player:  # Opponent's piece
-                    to_flip.append((r, c))
-                else:  # Player's piece
-                    for flip_r, flip_c in to_flip:
-                        next_state[flip_r, flip_c] = player
-                    break
-                r += dr
-                c += dc
-                
         return next_state
-    
-    def check_win(self, state):
+
+    def get_value_and_terminated(self, state: np.ndarray, player: int) -> Tuple[float, bool]:
         """
-        Check if the game is over and return the winner.
+        Checks if the game has ended and returns the value.
+        The value is from the perspective of the *next* player to move.
+        """
+        # Check if the current player has any valid moves
+        if np.any(self.get_valid_moves(state, player)):
+            return 0.0, False
+
+        # If the current player cannot move, check the opponent
+        if np.any(self.get_valid_moves(state, -player)):
+            return 0.0, False
+
+        # If neither player can move, the game is over
+        piece_count = np.sum(state)
+        if piece_count == 0:
+            return 0.0, True  # Draw
         
-        Returns:
-            1 if player 1 (Black) wins,
-            -1 if player -1 (White) wins,
-            0 for a draw,
-            None if the game is not over
-        """
-        # Check if there are valid moves for either player
-        if np.sum(self.get_valid_moves(state)) > 0 or np.sum(self.get_valid_moves(-state)) > 0:
-            return None
-            
-        # Count pieces
-        count = np.sum(state)
-        if count > 0:
-            return 1  # Black wins
-        elif count < 0:
-            return -1  # White wins
-        else:
-            return 0  # Draw
-    
-    def get_value_and_terminated(self, state, action):
-        """
-        Checks if the game is over and returns the value.
-        
-        Args:
-            state: Current 8x8 board state.
-            action: Last action taken.
-            
-        Returns:
-            (value, terminated): 
-                - value: 1 if player 1 wins, -1 if player -1 wins, 0 if draw.
-                - terminated: True if the game is over, False otherwise.
-        """
-        winner = self.check_win(state)
-        if winner is not None:
-            return winner, True
-        return 0, False
-    
-    def change_perspective(self, state, player):
-        """
-        Changes the perspective of the state to the given player.
-        
-        Args:
-            state: Current 8x8 board state.
-            player: Player to change perspective to (1 or -1).
-            
-        Returns:
-            State from the perspective of the given player.
-        """
+        # Winner is the one with more pieces. The value is relative to the current player.
+        # If player (e.g. 1) is the winner (piece_count > 0), value is 1.
+        # If player (e.g. -1) is the winner (piece_count < 0), value is 1.
+        winner = np.sign(piece_count)
+        return 1.0 if winner == player else -1.0, True
+
+    def get_opponent(self, player: int) -> int:
+        return -player
+
+    def change_perspective(self, state: np.ndarray, player: int) -> np.ndarray:
+        """Changes the perspective of the state to the given player."""
         return state * player
-    
-    def get_encoded_state(self, state):
+
+    def get_encoded_state(self, state: np.ndarray) -> np.ndarray:
         """
         Encodes the state for neural network input.
-        
-        Args:
-            state: Current 8x8 board state.
-            
-        Returns:
-            Encoded state with shape (3, 8, 8):
-                - Channel 0: Player 1's pieces (1 where player 1 has a piece, 0 elsewhere)
-                - Channel 1: Empty spaces (1 where empty, 0 elsewhere)
-                - Channel 2: Player -1's pieces (1 where player -1 has a piece, 0 elsewhere)
+        - Channel 0: Player's pieces
+        - Channel 1: Opponent's pieces
+        - Channel 2: Empty spaces (optional, but can be useful)
         """
-        encoded_state = np.stack(
-            (state == 1, state == 0, state == -1)
-        ).astype(np.float32)
-        
-        # If we're dealing with a batch of states
-        if len(state.shape) == 3:
-            encoded_state = np.swapaxes(encoded_state, 0, 1)
-            
-        return encoded_state
-    
-    def get_symmetries(self, encoded_state, policy):
+        return np.stack([
+            (state == 1).astype(np.float32),
+            (state == -1).astype(np.float32),
+        ])
+        # A 3-channel version could be:
+        # return np.stack([
+        #     (state == 1).astype(np.float32), 
+        #     (state == -1).astype(np.float32),
+        #     (state == 0).astype(np.float32)
+        # ])
+
+    def get_symmetries(self, state_encoded: np.ndarray, policy: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
-        Generate symmetries (rotations, reflections) of the state and policy.
-        
-        Args:
-            encoded_state: Encoded state with shape (3, 8, 8).
-            policy: Action probabilities with shape (64,).
-            
-        Returns:
-            List of (encoded_state, policy) tuples for each symmetry.
+        Generates symmetries (rotations and reflections) of the state and policy.
         """
-        # Convert policy from vector to 8x8 grid
         policy_grid = policy.reshape(self.row_count, self.column_count)
-        
-        # For encoded_state, we need to work with the channels separately
-        channel_0 = encoded_state[0]  # Player 1's pieces
-        channel_1 = encoded_state[1]  # Empty spaces
-        channel_2 = encoded_state[2]  # Player -1's pieces
-        
         symmetries = []
-        
-        # Generate 4 rotated positions (0°, 90°, 180°, 270°)
-        for i in range(4):
-            # Rotate the current state and policy
-            rot_channel_0 = np.rot90(channel_0, i)
-            rot_channel_1 = np.rot90(channel_1, i)
-            rot_channel_2 = np.rot90(channel_2, i)
-            rot_policy = np.rot90(policy_grid, i)
+
+        for i in range(4):  # Rotations: 0, 90, 180, 270 degrees
+            # Rotate state tensor and policy grid
+            # axes=(1, 2) rotates the spatial dimensions of the (C, H, W) tensor
+            rot_state = np.rot90(state_encoded, k=i, axes=(1, 2))
+            rot_policy = np.rot90(policy_grid, k=i)
+            symmetries.append((rot_state, rot_policy.flatten()))
             
-            # Create new encoded state from rotated channels
-            rot_encoded_state = np.stack([rot_channel_0, rot_channel_1, rot_channel_2])
-            
-            # Add the rotated position
-            symmetries.append((rot_encoded_state, rot_policy.flatten()))
-            
-            # Also add flipped version of this rotation
-            flip_channel_0 = np.fliplr(rot_channel_0)
-            flip_channel_1 = np.fliplr(rot_channel_1)
-            flip_channel_2 = np.fliplr(rot_channel_2)
+            # Flipped versions of the rotated states
+            flip_state = np.fliplr(rot_state)
             flip_policy = np.fliplr(rot_policy)
+            symmetries.append((flip_state, flip_policy.flatten()))
             
-            # Create new encoded state from flipped channels
-            flip_encoded_state = np.stack([flip_channel_0, flip_channel_1, flip_channel_2])
-            
-            # Add the flipped position
-            symmetries.append((flip_encoded_state, flip_policy.flatten()))
-        
         return symmetries
